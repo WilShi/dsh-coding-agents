@@ -47,11 +47,16 @@ const subprocess = {
 const manager = new CodingAgentsManager(subprocess)
 try {
   const installations = manager.installations()
-  if (installations.length !== 2 || installations.some(item => !item.available)) {
-    throw new Error('packaged coding-agent installations are incomplete')
+  if (installations.length !== 2) throw new Error('packaged coding-agent installations are incomplete')
+  const unavailable = installations.filter(item => !item.available)
+  if (unavailable.length > 0) {
+    throw new Error(unavailable.map(item => `${item.label} unavailable: ${item.diagnostic ?? 'unknown reason'}`).join('; '))
   }
   if (import.meta.url.includes('app.asar')) {
     for (const installation of installations) {
+      if (installation.executable === undefined) {
+        throw new Error(`${installation.label} has no resolved executable`)
+      }
       if (!installation.executable.includes('app.asar.unpacked')) {
         throw new Error(`${installation.label} executable did not map to app.asar.unpacked: ${installation.executable}`)
       }

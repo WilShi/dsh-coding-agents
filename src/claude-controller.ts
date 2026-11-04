@@ -35,17 +35,35 @@ import type {
   CodingAgentSessionQuery,
   CodingAgentSessionSummary,
 } from './types.ts'
+import { createLazy } from './lazy.ts'
 import { resolveNativePackageExecutable } from './native-executable.ts'
 
 const require = createRequire(import.meta.url)
-const sdkEntry = require.resolve('@anthropic-ai/claude-agent-sdk')
-const sdkManifest = JSON.parse(readFileSync(join(dirname(sdkEntry), 'package.json'), 'utf8')) as {
-  version: string
-  claudeCodeVersion?: string
-}
-const CLAUDE_EXECUTABLE = resolveNativePackageExecutable(
-  `@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}`,
-  process.platform === 'win32' ? 'claude.exe' : 'claude',
+const NATIVE_PACKAGE = `@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}`
+
+/**
+ * Claude Agent SDK manifest. Loaded on first use: a host that installed the
+ * plugin without the SDK must still be able to import and activate it.
+ */
+const sdkManifest = createLazy(
+  () => {
+    const entry = require.resolve('@anthropic-ai/claude-agent-sdk')
+    return JSON.parse(readFileSync(join(dirname(entry), 'package.json'), 'utf8')) as {
+      version: string
+      claudeCodeVersion?: string
+    }
+  },
+  message => `内置 Claude Agent SDK 不可用（@anthropic-ai/claude-agent-sdk）：${message}。请重新安装 dsh-coding-agents。`,
+)
+
+/**
+ * Platform-native Claude Code CLI. Resolved on first use so a package manager
+ * that skipped the platform optional dependency only disables this engine
+ * instead of failing the whole plugin import.
+ */
+const claudeExecutable = createLazy(
+  () => resolveNativePackageExecutable(NATIVE_PACKAGE, process.platform === 'win32' ? 'claude.exe' : 'claude'),
+  message => `内置 Claude Code 原生程序不可用（${NATIVE_PACKAGE}）：${message}。请重新安装 dsh-coding-agents，或检查包管理器是否跳过了 optional 依赖（pnpm 可检查 supportedArchitectures / --no-optional）。`,
 )
 
 type SubprocessFace = Pick<SubprocessRuntime, 'spawn'>
@@ -315,15 +333,46 @@ async function atomicWriteConfig(path: string, value: Record<string, unknown>): 
 }
 
 export class ClaudeController {
-  readonly sdkVersion = sdkManifest.version
-  readonly version = sdkManifest.claudeCodeVersion ?? sdkManifest.version
-  readonly executable = CLAUDE_EXECUTABLE
   readonly dataDirectory = configRoot()
   readonly configFile = join(this.dataDirectory, 'settings.json')
   readonly #queries = new Set<ClaudeQuery>()
   #closed = false
 
   constructor(private readonly subprocess: SubprocessFace) {}
+
+  /** SDK version, or a placeholder when the SDK package is not installed. */
+  get sdkVersion(): string {
+    return sdkManifest.peek()?.version ?? '未知版本'
+  }
+
+  /** Claude Code CLI version, or a placeholder when the SDK package is not installed. */
+  get version(): string {
+    const manifest = sdkManifest.peek()
+    return manifest?.claudeCodeVersion ?? manifest?.version ?? '未知版本'
+  }
+
+  /** Native CLI path; throws the actionable installation error when missing. */
+  get executable(): string {
+    return claudeExecutable.resolve()
+  }
+
+  /** Native CLI path when resolution already succeeded, without throwing. */
+  get executablePath(): string | undefined {
+    return claudeExecutable.peek()
+  }
+
+  /** Whether this engine can start tasks in the current installation. */
+  get available(): boolean {
+    return this.unavailableReason === undefined
+  }
+
+  /** Actionable reason this engine cannot start tasks, if any. */
+  get unavailableReason(): string | undefined {
+    sdkManifest.peek()
+    if (sdkManifest.failure !== undefined) return sdkManifest.failure.message
+    claudeExecutable.peek()
+    return claudeExecutable.failure?.message
+  }
 
   async list(filter: CodingAgentSessionQuery): Promise<CodingAgentSessionSummary[]> {
     const limit = Math.min(200, Math.max(1, Math.floor(filter.limit ?? 50)))
@@ -435,7 +484,7 @@ export class ClaudeController {
         settingSources: ['user', 'project', 'local'],
         tools: { type: 'preset', preset: 'claude_code' },
         systemPrompt: { type: 'preset', preset: 'claude_code' },
-        pathToClaudeCodeExecutable: CLAUDE_EXECUTABLE,
+        pathToClaudeCodeExecutable: this.executable,
         includePartialMessages: false,
         ...permissionOptions(request.permission ?? 'workspace-write', cwd),
         ...(request.model === undefined ? {} : { model: request.model }),

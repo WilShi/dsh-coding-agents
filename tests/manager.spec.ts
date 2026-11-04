@@ -4,8 +4,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { CodingAgentsManager } from '../src/manager.ts'
 
+const UNAVAILABLE = '内置 Codex 原生程序不可用：@openai/codex-darwin-arm64。请重新安装 dsh-coding-agents，或检查包管理器是否跳过了 optional 依赖。'
+
+/** Manager whose engines are resolvable, independent of the host's optional packages. */
 function manager(maximum = 4): CodingAgentsManager {
-  return new CodingAgentsManager({ spawn: () => { throw new Error('unexpected spawn') } } as never, maximum)
+  const subject = new CodingAgentsManager({ spawn: () => { throw new Error('unexpected spawn') } } as never, maximum)
+  vi.spyOn(subject.codex, 'unavailableReason', 'get').mockReturnValue(undefined)
+  vi.spyOn(subject.claude, 'unavailableReason', 'get').mockReturnValue(undefined)
+  return subject
 }
 
 describe('CodingAgentsManager', () => {
@@ -17,6 +23,29 @@ describe('CodingAgentsManager', () => {
       expect.objectContaining({ id: 'a1' }),
       expect.objectContaining({ id: 'c1' }),
     ])
+    await subject.dispose()
+  })
+
+  it('reports one unavailable engine without failing status or the other engine', async () => {
+    const subject = manager()
+    vi.spyOn(subject.codex, 'unavailableReason', 'get').mockReturnValue(UNAVAILABLE)
+    vi.spyOn(subject.codex, 'executablePath', 'get').mockReturnValue(undefined)
+    const installations = subject.installations()
+    expect(installations.find(item => item.engine === 'codex')).toMatchObject({
+      available: false,
+      diagnostic: UNAVAILABLE,
+    })
+    expect(installations.find(item => item.engine === 'codex')?.executable).toBeUndefined()
+    expect(installations.find(item => item.engine === 'claude-code')?.available).toBe(true)
+    expect(() => subject.start({ engine: 'codex', mode: 'new', prompt: 'x' })).toThrow(/optional/u)
+    await subject.dispose()
+  })
+
+  it('keeps the combined listing alive when one engine fails', async () => {
+    const subject = manager()
+    vi.spyOn(subject.codex, 'list').mockRejectedValue(new Error(UNAVAILABLE))
+    vi.spyOn(subject.claude, 'list').mockResolvedValue([{ engine: 'claude-code', id: 'a1', title: 'Claude', preview: '', updatedAt: 20 }])
+    await expect(subject.list({ engine: 'all', limit: 10 })).resolves.toEqual([expect.objectContaining({ id: 'a1' })])
     await subject.dispose()
   })
 

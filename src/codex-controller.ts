@@ -17,11 +17,10 @@ import type {
   CodingAgentSessionQuery,
   CodingAgentSessionSummary,
 } from './types.ts'
+import { createLazy } from './lazy.ts'
 import { resolveNativePackageExecutable } from './native-executable.ts'
 
 const require = createRequire(import.meta.url)
-const codexPackageJson = require.resolve('@openai/codex/package.json')
-const codexManifest = JSON.parse(readFileSync(codexPackageJson, 'utf8')) as { version: string }
 
 const CODEX_TARGETS: Record<string, { packageName: string; triple: string }> = {
   'darwin-arm64': { packageName: '@openai/codex-darwin-arm64', triple: 'aarch64-apple-darwin' },
@@ -32,14 +31,36 @@ const CODEX_TARGETS: Record<string, { packageName: string; triple: string }> = {
   'win32-x64': { packageName: '@openai/codex-win32-x64', triple: 'x86_64-pc-windows-msvc' },
 }
 
-const codexTarget = CODEX_TARGETS[`${process.platform}-${process.arch}`]
-if (codexTarget === undefined) throw new Error(`Codex 不支持当前平台：${process.platform}-${process.arch}`)
-const CODEX_EXECUTABLE = resolveNativePackageExecutable(
-  codexTarget.packageName,
-  'vendor',
-  codexTarget.triple,
-  'bin',
-  process.platform === 'win32' ? 'codex.exe' : 'codex',
+/**
+ * Codex CLI manifest. Loaded on first use so a host that installed the plugin
+ * without the vendor package can still import and activate it.
+ */
+const codexManifest = createLazy(
+  () => {
+    const manifestPath = require.resolve('@openai/codex/package.json')
+    return JSON.parse(readFileSync(manifestPath, 'utf8')) as { version: string }
+  },
+  message => `内置 Codex 元数据不可用（@openai/codex）：${message}。请重新安装 dsh-coding-agents。`,
+)
+
+/**
+ * Platform-native Codex CLI. Resolved on first use so a package manager that
+ * skipped the platform optional dependency only disables this engine instead of
+ * failing the whole plugin import.
+ */
+const codexExecutable = createLazy(
+  () => {
+    const target = CODEX_TARGETS[`${process.platform}-${process.arch}`]
+    if (target === undefined) throw new Error(`Codex 不支持当前平台：${process.platform}-${process.arch}`)
+    return resolveNativePackageExecutable(
+      target.packageName,
+      'vendor',
+      target.triple,
+      'bin',
+      process.platform === 'win32' ? 'codex.exe' : 'codex',
+    )
+  },
+  message => `内置 Codex 原生程序不可用：${message}。请重新安装 dsh-coding-agents，或检查包管理器是否跳过了 optional 依赖（pnpm 可检查 supportedArchitectures / --no-optional）。`,
 )
 
 type SubprocessFace = Pick<SubprocessRuntime, 'spawn'>
@@ -166,8 +187,6 @@ function codexPolicy(permission: CodingAgentPermission): { approvalPolicy: 'neve
 }
 
 export class CodexController {
-  readonly version = codexManifest.version
-  readonly executable = CODEX_EXECUTABLE
   readonly dataDirectory = process.env.CODEX_HOME?.trim() || join(homedir(), '.codex')
   readonly configFile = join(this.dataDirectory, 'config.toml')
   #child?: SubprocessHandle
@@ -177,6 +196,34 @@ export class CodexController {
   readonly #activeByThread = new Map<string, ActiveTurn>()
 
   constructor(private readonly subprocess: SubprocessFace) {}
+
+  /** Codex CLI version, or a placeholder when the vendor package is not installed. */
+  get version(): string {
+    return codexManifest.peek()?.version ?? '未知版本'
+  }
+
+  /** Native CLI path; throws the actionable installation error when missing. */
+  get executable(): string {
+    return codexExecutable.resolve()
+  }
+
+  /** Native CLI path when resolution already succeeded, without throwing. */
+  get executablePath(): string | undefined {
+    return codexExecutable.peek()
+  }
+
+  /** Whether this engine can start tasks in the current installation. */
+  get available(): boolean {
+    return this.unavailableReason === undefined
+  }
+
+  /** Actionable reason this engine cannot start tasks, if any. */
+  get unavailableReason(): string | undefined {
+    codexManifest.peek()
+    if (codexManifest.failure !== undefined) return codexManifest.failure.message
+    codexExecutable.peek()
+    return codexExecutable.failure?.message
+  }
 
   async #ensure(): Promise<JsonRpcLineTransport> {
     if (this.#closed) throw new Error('Codex 控制器已经关闭')
@@ -196,7 +243,7 @@ export class CodexController {
 
   async #start(): Promise<void> {
     const child = this.subprocess.spawn({
-      argv: [CODEX_EXECUTABLE, 'app-server', '--stdio'],
+      argv: [this.executable, 'app-server', '--stdio'],
       cwd: process.cwd(),
       env: scrubbedParentEnv(),
       stdio: { stdin: 'pipe', stdout: 'pipe', stderr: 'inherit' },

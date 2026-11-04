@@ -47,27 +47,37 @@ export class CodingAgentsManager {
     this.claude = new ClaudeController(subprocess)
   }
 
+  /**
+   * Per-engine installation status. Never throws: a missing vendor package or
+   * platform-native binary marks that engine unavailable with an actionable
+   * reason while the other engine, and the rest of the plugin, stay usable.
+   * @returns both engines, in display order.
+   */
   installations(): CodingAgentInstallation[] {
+    const codexIssue = this.codex.unavailableReason
+    const claudeIssue = this.claude.unavailableReason
+    const codexExecutable = this.codex.executablePath
+    const claudeExecutable = this.claude.executablePath
     return [
       {
         engine: 'codex',
         label: 'Codex',
-        available: true,
+        available: codexIssue === undefined,
         version: this.codex.version,
-        executable: this.codex.executable,
+        ...(codexExecutable === undefined ? {} : { executable: codexExecutable }),
         dataDirectory: this.codex.dataDirectory,
         configFile: this.codex.configFile,
-        diagnostic: '使用 DSH 内置的官方 Codex App Server，读取并管理当前用户的 Codex 会话。',
+        diagnostic: codexIssue ?? '使用 DSH 内置的官方 Codex App Server，读取并管理当前用户的 Codex 会话。',
       },
       {
         engine: 'claude-code',
         label: 'Claude Code',
-        available: true,
+        available: claudeIssue === undefined,
         version: this.claude.version,
-        executable: this.claude.executable,
+        ...(claudeExecutable === undefined ? {} : { executable: claudeExecutable }),
         dataDirectory: this.claude.dataDirectory,
         configFile: this.claude.configFile,
-        diagnostic: `使用官方 Claude Agent SDK ${this.claude.sdkVersion}，读取并管理当前用户的 Claude Code 会话。`,
+        diagnostic: claudeIssue ?? `使用官方 Claude Agent SDK ${this.claude.sdkVersion}，读取并管理当前用户的 Claude Code 会话。`,
       },
     ]
   }
@@ -79,11 +89,15 @@ export class CodingAgentsManager {
     if (engine === 'claude-code') return this.claude.list(query)
     const limit = Math.min(200, Math.max(1, Math.floor(query.limit ?? 50)))
     const perEngine = { ...query, limit: Math.min(200, limit + Math.max(0, query.offset ?? 0)), offset: 0 }
-    const [codex, claude] = await Promise.all([
+    // One unavailable engine must not fail the combined listing; installations()
+    // carries the per-engine reason for callers that render status.
+    const [codex, claude] = await Promise.allSettled([
       this.codex.list(perEngine),
       this.claude.list(perEngine),
     ])
-    return [...codex, ...claude]
+    const codexSessions = codex.status === 'fulfilled' ? codex.value : []
+    const claudeSessions = claude.status === 'fulfilled' ? claude.value : []
+    return [...codexSessions, ...claudeSessions]
       .sort((left, right) => right.updatedAt - left.updatedAt)
       .slice(Math.max(0, query.offset ?? 0), Math.max(0, query.offset ?? 0) + limit)
   }
@@ -110,6 +124,7 @@ export class CodingAgentsManager {
 
   start(request: CodingAgentRunRequest): CodingAgentRunSnapshot {
     this.#ensureOpen()
+    this.#assertEngineAvailable(request.engine)
     if (request.prompt.trim() === '') throw new Error('任务内容不能为空')
     if (this.runningCount() >= this.maximumConcurrentRuns) throw new Error(`已有 ${this.maximumConcurrentRuns} 个编程助手任务正在运行，请等待或取消一个任务`)
     const id = randomUUID()
@@ -234,6 +249,12 @@ export class CodingAgentsManager {
       if (active === undefined) break
       this.#runs.delete(active.snapshot.id)
     }
+  }
+
+  /** Refuse a run for an engine whose native program cannot be resolved. */
+  #assertEngineAvailable(engine: CodingAgentEngine): void {
+    const reason = engine === 'codex' ? this.codex.unavailableReason : this.claude.unavailableReason
+    if (reason !== undefined) throw new Error(reason)
   }
 
   #ensureOpen(): void {

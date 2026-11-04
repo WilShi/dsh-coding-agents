@@ -35,7 +35,12 @@ export function createCodingAgentTools(manager: CodingAgentsManager) {
     async execute() {
       const installations = manager.installations()
       return {
-        installations: installations.map(item => `${item.label} ${item.version ?? '未知版本'}：${item.available ? '可用' : '不可用'}\n数据：${item.dataDirectory}\n配置：${item.configFile}`).join('\n\n'),
+        installations: installations.map(item => [
+          `${item.label} ${item.version ?? '未知版本'}：${item.available ? '可用' : '不可用'}`,
+          ...(item.available ? [] : [`原因：${item.diagnostic ?? '未知'}`]),
+          `数据：${item.dataDirectory}`,
+          `配置：${item.configFile}`,
+        ].join('\n')).join('\n\n'),
         running: manager.runningCount(),
         maximumConcurrentRuns: manager.maximumConcurrentRuns,
       }

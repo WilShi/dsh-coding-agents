@@ -81,7 +81,7 @@ npm run smoke:host  # load lib/index.js in a real cordis context with stubbed ho
 ## Known limitations
 
 - Requires a local Codex / Claude Code installation and login. Without it the engine reports an explicit unavailable state.
-- Native executables are resolved at module load time; when the optional native package is missing the whole plugin fails to import (same behaviour as 0.1.5 — lazy loading is planned).
+- Native executables are resolved on first use. If a package manager skipped the platform optional dependency, only that engine reports an actionable "unavailable" state (status page, `coding_agent_status`, run start) while the plugin itself still imports and the other engine keeps working; reinstall with optional dependencies enabled to restore it.
 - The bundled native dependencies are large, so the first install depends on network speed.
 - The HTTP API is a loopback `http://` surface by design: a TLS or non-loopback DSH web deployment is refused rather than downgraded.
 - The plugin drives the vendor CLIs; it does not reimplement their agent loops.

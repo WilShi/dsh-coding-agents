@@ -1,6 +1,6 @@
 {
   "name": "dsh-coding-agents",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "DSH control center for locally installed Codex and Claude Code: search and manage native sessions, run/resume/fork tasks, and edit configuration. · DSH 编程助手：统一管理、检索并直接控制 Codex 与 Claude Code。",
   "publishConfig": {
     "access": "public"

@@ -230,7 +230,8 @@ export function CodingAgentsView({ api }: CodingAgentsViewProps) {
       {installations.map(item => <div className={styles.installationCard} key={item.engine}>
         <span className={`${styles.engineMark} ${item.engine === 'codex' ? styles.codex : styles.claude}`}>{item.engine === 'codex' ? 'CX' : 'CC'}</span>
         <div><strong>{item.label}</strong><span>{item.version ?? '未知版本'}</span></div>
-        <span className={item.available ? styles.online : styles.offline}>{item.available ? '可用' : '不可用'}</span>
+        <span className={item.available ? styles.online : styles.offline} title={item.available ? undefined : item.diagnostic}>{item.available ? '可用' : '不可用'}</span>
+        {!item.available && item.diagnostic !== undefined && <p className={styles.unavailableHint}>{item.diagnostic}</p>}
       </div>)}
       <div className={styles.capacity}>并行任务 <strong>{runs.filter(run => run.state === 'starting' || run.state === 'running').length}</strong> / {maximum}</div>
     </section>
