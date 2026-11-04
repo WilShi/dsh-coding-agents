@@ -1,7 +1,7 @@
-import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-subprocess'
-import type { ToolRuntime } from '@deepseek-ai/dsh-tools'
+import type {} from '@deepseek-ai/dsh-tools'
 import { CODING_AGENTS_API_PREFIX, createCodingAgentsRoute } from './api-route.ts'
 import { CodingAgentsManager } from './manager.ts'
 import { createCodingAgentTools } from './tools.ts'
@@ -12,21 +12,6 @@ export { createCodingAgentsRoute, CODING_AGENTS_API_PREFIX } from './api-route.t
 
 export const name = 'dsh-coding-agents'
 export const inject = ['webServer', 'subprocess', 'tools']
-
-interface WebServerFace {
-  register(route: {
-    kind: 'prefix' | 'exact'
-    path: string
-    handler(request: IncomingMessage, response: ServerResponse): Promise<void> | void
-  }): () => void
-}
-
-declare module '@deepseek-ai/cordis' {
-  interface Context {
-    webServer: WebServerFace
-    tools: ToolRuntime
-  }
-}
 
 export async function apply(ctx: Context): Promise<void> {
   const manager = new CodingAgentsManager(ctx.subprocess, 4)

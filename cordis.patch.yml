@@ -1,0 +1,6 @@
+# dsh bundle patch: activates dsh-coding-agents in any profile that installs
+# this package (via `dsh plugin --profile <name> add dsh-coding-agents`).
+# A profile's own cordis.patch.yml may override or disable this row by id.
+- insert:
+    - id: dsh-coding-agents
+      name: 'dsh-coding-agents'

@@ -1,21 +1,87 @@
-# DSH 编程助手
+# dsh-coding-agents
 
-DSH 内置的 Codex / Claude Code 统一控制插件。插件调用两个产品公开且稳定的本地接口，不解析或改写它们的私有数据库。
+**Drive your local Codex and Claude Code from DeepSeek Harness — sessions, config and run state, from one settings page and six agent tools.**
 
-## 能力
+[![npm version](https://img.shields.io/npm/v/dsh-coding-agents?logo=npm&label=npm)](https://www.npmjs.com/package/dsh-coding-agents)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Node.js](https://img.shields.io/badge/Node.js-22.19%20%7C%2024-339933?logo=node.js&logoColor=white)](#requirements)
 
-- 跨 Codex 与 Claude Code 搜索本机历史会话，并分页读取超长记录。
-- 新建、继续或分叉原生会话，实时展示文本、工具与运行状态，并支持取消任务。
-- 重命名、标签、归档、取消归档、回滚和删除会话；不适用于某个引擎的操作会明确拒绝。
-- 查看配置、生效值和来源；通过 Codex 官方配置协议写入，Claude Code 使用备份加原子替换。
-- 在“设置 → 编程助手”中完成图形化操作，也可直接让 DSH Agent 调用六个 `coding_agent_*` 工具。
+English | [中文](README.zh.md)
 
-## 自然语言示例
+The plugin calls the public, stable local interfaces of Codex and Claude Code. It never parses or rewrites their private databases, and every write goes through the vendor's own configuration protocol or a backup-plus-atomic-replace.
 
-- “列出 Codex 和 Claude Code 最近的会话。”
-- “查一下包含登录故障的历史记录。”
-- “继续这个 Codex 会话并运行测试。”
-- “用 Claude Code 在当前工作区新建一个任务，修复构建错误。”
-- “读取 Codex 当前配置。”
+## Requirements
 
-插件只控制当前 Windows 用户已经安装且可用的产品。运行任务默认采用工作区可写权限；完全访问仍应由用户明确要求。
+| Item | Value |
+| --- | --- |
+| DSH | 0.2.1-rc.5 (Cordis `4.0.5`, `@deepseek-ai/*` 0.2.1-rc.5) |
+| Node.js | `^22.19.0 \|\| ^24.0.0` |
+| Host services | `webServer`, `subprocess`, `tools` |
+| Client services | `slots` (registers one section under Settings → Coding agents) |
+| Bundled dependencies | `@openai/codex`, `@anthropic-ai/claude-agent-sdk` and their native binaries — the install is large |
+
+## Install
+
+The package ships `cordis.patch.yml` and a `dsh.bundle.patch` declaration, so it installs as a bundle:
+
+```bash
+dsh plugin --profile <profile> add dsh-coding-agents
+```
+
+Or add one loader entry to the profile's `cordis.patch.yml`:
+
+```yaml
+- insert:
+    - id: dsh-coding-agents
+      name: 'dsh-coding-agents'
+```
+
+Restart the profile, then open **Settings → Coding agents**.
+
+## What you can do
+
+- Search the local session history of both Codex and Claude Code, and page through very long transcripts.
+- Start, continue or fork a native session, watch text, tool calls and run state live, and cancel a run.
+- Rename, tag, archive, unarchive, roll back and delete sessions. Operations that do not apply to an engine are refused explicitly instead of failing silently.
+- Inspect configuration values, their effective values and their origin. Codex writes through its official config protocol; Claude Code uses backup plus atomic replace.
+- The same capabilities are exposed to the DSH agent as six `coding_agent_*` tools, not only through the settings page.
+
+## Natural-language examples
+
+- "List the most recent Codex and Claude Code sessions."
+- "Find the history that mentions the login failure."
+- "Continue that Codex session and run the tests."
+- "Start a Claude Code task in this workspace and fix the build error."
+- "Read the current Codex configuration."
+
+The plugin only drives engines that the current user has installed and logged in. Runs default to workspace-write permissions; full access still requires an explicit request from the user.
+
+## Safety boundaries
+
+- No vendor private database is read; only the public local interfaces.
+- Configuration writes are backup plus atomic replace, so a failure never leaves a half-written file.
+- Child processes live in the host's `subprocess` service and inherit a scrubbed environment (`scrubbedParentEnv`).
+- Session operations are workspace-scoped and the HTTP route is same-origin only.
+
+## Development
+
+```bash
+npm install
+npm run typecheck   # source + client + tests
+npm run build       # tsc → lib/, esbuild → lib/client.js
+npm test            # vitest
+npm run smoke:host  # load lib/index.js in a real cordis context with stubbed host services
+```
+
+`lib/client.js` is a `window.__ModuleLoader__.load({ id, factory })` closure factory, statically verified and executed in a sandbox by `scripts/verify-client.mjs`. The host contract is verified by `scripts/verify-host.mjs`: a real `@deepseek-ai/cordis` context loads the module, registers the route and tools, and cleans them up on dispose.
+
+## Known limitations
+
+- Requires a local Codex / Claude Code installation and login. Without it the engine reports an explicit unavailable state.
+- Native executables are resolved at module load time; when the optional native package is missing the whole plugin fails to import (same behaviour as 0.1.5 — lazy loading is planned).
+- The bundled native dependencies are large, so the first install depends on network speed.
+- The plugin drives the vendor CLIs; it does not reimplement their agent loops.
+
+## License
+
+MIT © WilShi
