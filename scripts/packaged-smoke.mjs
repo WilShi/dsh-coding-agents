@@ -46,7 +46,7 @@ const subprocess = {
 
 const manager = new CodingAgentsManager(subprocess)
 try {
-  const installations = manager.installations()
+  const installations = await manager.installations()
   if (installations.length !== 2) throw new Error('packaged coding-agent installations are incomplete')
   const unavailable = installations.filter(item => !item.available)
   if (unavailable.length > 0) {

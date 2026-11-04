@@ -33,10 +33,10 @@ export function createCodingAgentTools(manager: CodingAgentsManager) {
       render: (_args, value) => [{ type: 'text', text: (value as { installations: string }).installations }],
     },
     async execute() {
-      const installations = manager.installations()
+      const installations = await manager.installations()
       return {
         installations: installations.map(item => [
-          `${item.label} ${item.version ?? '未知版本'}：${item.available ? '可用' : '不可用'}`,
+          `${item.label} ${item.version ?? '未知版本'}：${item.available ? '可用' : '不可用'}${item.source === undefined ? '' : `（来源：${item.source}）`}`,
           ...(item.available ? [] : [`原因：${item.diagnostic ?? '未知'}`]),
           `数据：${item.dataDirectory}`,
           `配置：${item.configFile}`,

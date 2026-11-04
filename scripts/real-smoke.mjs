@@ -50,7 +50,7 @@ const subprocess = {
 const execute = process.argv.includes('--execute')
 const manager = new CodingAgentsManager(subprocess)
 const workspace = await mkdtemp(join(tmpdir(), 'dsh-coding-agents-smoke-'))
-const report = { status: manager.installations(), history: {}, configurations: {}, executions: {} }
+const report = { status: await manager.installations(), history: {}, configurations: {}, executions: {} }
 
 try {
   for (const engine of ['codex', 'claude-code']) {

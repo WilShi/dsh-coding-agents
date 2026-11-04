@@ -22,6 +22,13 @@ function dateTime(value: number | undefined): string {
   return value === undefined ? '未知时间' : new Date(value).toLocaleString('zh-CN')
 }
 
+function sourceName(source: CodingAgentInstallation['source']): string {
+  if (source === 'config') return '自定义路径'
+  if (source === 'system') return '系统 PATH'
+  if (source === 'bundled') return '插件内置'
+  return '未解析'
+}
+
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
@@ -229,7 +236,7 @@ export function CodingAgentsView({ api }: CodingAgentsViewProps) {
     <section className={styles.installations}>
       {installations.map(item => <div className={styles.installationCard} key={item.engine}>
         <span className={`${styles.engineMark} ${item.engine === 'codex' ? styles.codex : styles.claude}`}>{item.engine === 'codex' ? 'CX' : 'CC'}</span>
-        <div><strong>{item.label}</strong><span>{item.version ?? '未知版本'}</span></div>
+        <div><strong>{item.label}</strong><span>{item.version ?? '未知版本'} · {sourceName(item.source)}</span></div>
         <span className={item.available ? styles.online : styles.offline} title={item.available ? undefined : item.diagnostic}>{item.available ? '可用' : '不可用'}</span>
         {!item.available && item.diagnostic !== undefined && <p className={styles.unavailableHint}>{item.diagnostic}</p>}
       </div>)}

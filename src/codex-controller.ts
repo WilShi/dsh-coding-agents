@@ -1,12 +1,12 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { copyFile } from 'node:fs/promises'
-import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { Readable, Writable } from 'node:stream'
 import { JsonRpcLineTransport } from '@deepseek-ai/dsh-sdk-protocol'
 import { scrubbedParentEnv, type SubprocessHandle, type SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
 import type {
+  CodingAgentsConfig,
   CodingAgentConfigSnapshot,
   CodingAgentConfigWrite,
   CodingAgentMessage,
@@ -17,10 +17,8 @@ import type {
   CodingAgentSessionQuery,
   CodingAgentSessionSummary,
 } from './types.ts'
-import { createLazy } from './lazy.ts'
+import { EngineCli } from './engine-resolver.ts'
 import { resolveNativePackageExecutable } from './native-executable.ts'
-
-const require = createRequire(import.meta.url)
 
 const CODEX_TARGETS: Record<string, { packageName: string; triple: string }> = {
   'darwin-arm64': { packageName: '@openai/codex-darwin-arm64', triple: 'aarch64-apple-darwin' },
@@ -32,36 +30,20 @@ const CODEX_TARGETS: Record<string, { packageName: string; triple: string }> = {
 }
 
 /**
- * Codex CLI manifest. Loaded on first use so a host that installed the plugin
- * without the vendor package can still import and activate it.
+ * The Codex CLI shipped inside this package's optional vendor dependency. Only
+ * consulted when neither the config override nor the system PATH provides one.
  */
-const codexManifest = createLazy(
-  () => {
-    const manifestPath = require.resolve('@openai/codex/package.json')
-    return JSON.parse(readFileSync(manifestPath, 'utf8')) as { version: string }
-  },
-  message => `内置 Codex 元数据不可用（@openai/codex）：${message}。请重新安装 dsh-coding-agents。`,
-)
-
-/**
- * Platform-native Codex CLI. Resolved on first use so a package manager that
- * skipped the platform optional dependency only disables this engine instead of
- * failing the whole plugin import.
- */
-const codexExecutable = createLazy(
-  () => {
-    const target = CODEX_TARGETS[`${process.platform}-${process.arch}`]
-    if (target === undefined) throw new Error(`Codex 不支持当前平台：${process.platform}-${process.arch}`)
-    return resolveNativePackageExecutable(
-      target.packageName,
-      'vendor',
-      target.triple,
-      'bin',
-      process.platform === 'win32' ? 'codex.exe' : 'codex',
-    )
-  },
-  message => `内置 Codex 原生程序不可用：${message}。请重新安装 dsh-coding-agents，或检查包管理器是否跳过了 optional 依赖（pnpm 可检查 supportedArchitectures / --no-optional）。`,
-)
+function bundledCodexExecutable(): string {
+  const target = CODEX_TARGETS[`${process.platform}-${process.arch}`]
+  if (target === undefined) throw new Error(`Codex 不支持当前平台：${process.platform}-${process.arch}`)
+  return resolveNativePackageExecutable(
+    target.packageName,
+    'vendor',
+    target.triple,
+    'bin',
+    process.platform === 'win32' ? 'codex.exe' : 'codex',
+  )
+}
 
 type SubprocessFace = Pick<SubprocessRuntime, 'spawn'>
 
@@ -194,35 +176,46 @@ export class CodexController {
   #initializing?: Promise<void>
   #closed = false
   readonly #activeByThread = new Map<string, ActiveTurn>()
+  readonly #cli: EngineCli
 
-  constructor(private readonly subprocess: SubprocessFace) {}
-
-  /** Codex CLI version, or a placeholder when the vendor package is not installed. */
-  get version(): string {
-    return codexManifest.peek()?.version ?? '未知版本'
+  constructor(private readonly subprocess: SubprocessFace, config: CodingAgentsConfig = {}) {
+    this.#cli = new EngineCli({
+      engine: 'codex',
+      label: 'Codex',
+      configured: config.codexCommand,
+      bundled: bundledCodexExecutable,
+      subprocess,
+    })
   }
 
-  /** Native CLI path; throws the actionable installation error when missing. */
+  /** Where the Codex CLI came from. */
+  get source() {
+    return this.#cli.source
+  }
+
+  /** CLI path; throws the actionable installation error when missing. */
   get executable(): string {
-    return codexExecutable.resolve()
+    return this.#cli.command
   }
 
-  /** Native CLI path when resolution already succeeded, without throwing. */
+  /** CLI path when resolution succeeded, without throwing. */
   get executablePath(): string | undefined {
-    return codexExecutable.peek()
+    return this.#cli.commandOrUndefined
   }
 
   /** Whether this engine can start tasks in the current installation. */
   get available(): boolean {
-    return this.unavailableReason === undefined
+    return this.#cli.available
   }
 
   /** Actionable reason this engine cannot start tasks, if any. */
   get unavailableReason(): string | undefined {
-    codexManifest.peek()
-    if (codexManifest.failure !== undefined) return codexManifest.failure.message
-    codexExecutable.peek()
-    return codexExecutable.failure?.message
+    return this.#cli.reason
+  }
+
+  /** Cached `codex --version` value. */
+  version(): Promise<string | undefined> {
+    return this.#cli.version()
   }
 
   async #ensure(): Promise<JsonRpcLineTransport> {

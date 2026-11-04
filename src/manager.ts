@@ -3,9 +3,11 @@ import type { SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
 import { ClaudeController } from './claude-controller.ts'
 import { CodexController } from './codex-controller.ts'
 import type {
+  CodingAgentsConfig,
   CodingAgentConfigSnapshot,
   CodingAgentConfigWrite,
   CodingAgentEngine,
+  CodingAgentInstallSource,
   CodingAgentInstallation,
   CodingAgentRunEvent,
   CodingAgentRunRequest,
@@ -32,6 +34,14 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+/** Human-readable origin of a resolved CLI for the status diagnostic. */
+function sourceLabel(source: CodingAgentInstallSource | undefined): string {
+  if (source === 'config') return ' config 指定的'
+  if (source === 'system') return '系统 PATH 中的'
+  if (source === 'bundled') return '插件内置的'
+  return ''
+}
+
 function copySnapshot(snapshot: CodingAgentRunSnapshot, afterSeq = 0): CodingAgentRunSnapshot {
   return { ...snapshot, events: snapshot.events.filter(event => event.seq > afterSeq).map(event => ({ ...event })) }
 }
@@ -42,42 +52,48 @@ export class CodingAgentsManager {
   readonly #runs = new Map<string, ActiveRun>()
   #disposed = false
 
-  constructor(subprocess: SubprocessFace, readonly maximumConcurrentRuns = 4) {
-    this.codex = new CodexController(subprocess)
-    this.claude = new ClaudeController(subprocess)
+  constructor(subprocess: SubprocessFace, readonly maximumConcurrentRuns = 4, config: CodingAgentsConfig = {}) {
+    this.codex = new CodexController(subprocess, config)
+    this.claude = new ClaudeController(subprocess, config)
   }
 
   /**
-   * Per-engine installation status. Never throws: a missing vendor package or
+   * Per-engine installation status. Never throws: a missing CLI, SDK or
    * platform-native binary marks that engine unavailable with an actionable
    * reason while the other engine, and the rest of the plugin, stay usable.
+   * Each engine reports where its CLI came from (config / system / bundled) and
+   * the version read from `<cli> --version` (cached by the controller).
    * @returns both engines, in display order.
    */
-  installations(): CodingAgentInstallation[] {
+  async installations(): Promise<CodingAgentInstallation[]> {
+    const [codexVersion, claudeVersion] = await Promise.all([this.codex.version(), this.claude.version()])
     const codexIssue = this.codex.unavailableReason
     const claudeIssue = this.claude.unavailableReason
     const codexExecutable = this.codex.executablePath
     const claudeExecutable = this.claude.executablePath
+    const sdkVersion = this.claude.sdkVersion
     return [
       {
         engine: 'codex',
         label: 'Codex',
         available: codexIssue === undefined,
-        version: this.codex.version,
+        ...(codexVersion === undefined ? {} : { version: codexVersion }),
         ...(codexExecutable === undefined ? {} : { executable: codexExecutable }),
+        ...(this.codex.source === undefined ? {} : { source: this.codex.source }),
         dataDirectory: this.codex.dataDirectory,
         configFile: this.codex.configFile,
-        diagnostic: codexIssue ?? '使用 DSH 内置的官方 Codex App Server，读取并管理当前用户的 Codex 会话。',
+        diagnostic: codexIssue ?? `使用${sourceLabel(this.codex.source)} Codex CLI，读取并管理当前用户的 Codex 会话。`,
       },
       {
         engine: 'claude-code',
         label: 'Claude Code',
         available: claudeIssue === undefined,
-        version: this.claude.version,
+        ...(claudeVersion === undefined ? {} : { version: claudeVersion }),
         ...(claudeExecutable === undefined ? {} : { executable: claudeExecutable }),
+        ...(this.claude.source === undefined ? {} : { source: this.claude.source }),
         dataDirectory: this.claude.dataDirectory,
         configFile: this.claude.configFile,
-        diagnostic: claudeIssue ?? `使用官方 Claude Agent SDK ${this.claude.sdkVersion}，读取并管理当前用户的 Claude Code 会话。`,
+        diagnostic: claudeIssue ?? `使用${sourceLabel(this.claude.source)} Claude Code CLI${sdkVersion === undefined ? '' : `（Agent SDK ${sdkVersion}）`}，读取并管理当前用户的 Claude Code 会话。`,
       },
     ]
   }

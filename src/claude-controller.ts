@@ -1,30 +1,21 @@
 import { EventEmitter } from 'node:events'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { copyFile, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
-import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { Readable, Writable } from 'node:stream'
-import {
-  deleteSession,
-  forkSession,
-  getSessionInfo,
-  getSessionMessages,
-  listSessions,
-  query as claudeQuery,
-  renameSession,
-  resolveSettings,
-  tagSession,
-  type Options as ClaudeOptions,
-  type Query as ClaudeQuery,
-  type SDKMessage,
-  type SDKSessionInfo,
-  type SessionMessage,
-  type SpawnedProcess,
-  type SpawnOptions,
+import type {
+  Options as ClaudeOptions,
+  Query as ClaudeQuery,
+  SDKMessage,
+  SDKSessionInfo,
+  SessionMessage,
+  SpawnedProcess,
+  SpawnOptions,
 } from '@anthropic-ai/claude-agent-sdk'
 import { scrubbedParentEnv, type SubprocessHandle, type SubprocessOutcome, type SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
 import type {
+  CodingAgentsConfig,
   CodingAgentConfigSnapshot,
   CodingAgentConfigWrite,
   CodingAgentMessage,
@@ -35,36 +26,20 @@ import type {
   CodingAgentSessionQuery,
   CodingAgentSessionSummary,
 } from './types.ts'
-import { createLazy } from './lazy.ts'
+import { claudeSdkInstalled, claudeSdkUnavailableReason, claudeSdkVersion, loadClaudeSdk } from './claude-sdk.ts'
+import { EngineCli } from './engine-resolver.ts'
 import { resolveNativePackageExecutable } from './native-executable.ts'
 
-const require = createRequire(import.meta.url)
 const NATIVE_PACKAGE = `@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}`
 
 /**
- * Claude Agent SDK manifest. Loaded on first use: a host that installed the
- * plugin without the SDK must still be able to import and activate it.
+ * The Claude Code CLI shipped inside this package's optional vendor dependency.
+ * Only consulted when neither the config override nor the system PATH provides
+ * one, so a user who installed Claude Code globally keeps their own version.
  */
-const sdkManifest = createLazy(
-  () => {
-    const entry = require.resolve('@anthropic-ai/claude-agent-sdk')
-    return JSON.parse(readFileSync(join(dirname(entry), 'package.json'), 'utf8')) as {
-      version: string
-      claudeCodeVersion?: string
-    }
-  },
-  message => `内置 Claude Agent SDK 不可用（@anthropic-ai/claude-agent-sdk）：${message}。请重新安装 dsh-coding-agents。`,
-)
-
-/**
- * Platform-native Claude Code CLI. Resolved on first use so a package manager
- * that skipped the platform optional dependency only disables this engine
- * instead of failing the whole plugin import.
- */
-const claudeExecutable = createLazy(
-  () => resolveNativePackageExecutable(NATIVE_PACKAGE, process.platform === 'win32' ? 'claude.exe' : 'claude'),
-  message => `内置 Claude Code 原生程序不可用（${NATIVE_PACKAGE}）：${message}。请重新安装 dsh-coding-agents，或检查包管理器是否跳过了 optional 依赖（pnpm 可检查 supportedArchitectures / --no-optional）。`,
-)
+function bundledClaudeExecutable(): string {
+  return resolveNativePackageExecutable(NATIVE_PACKAGE, process.platform === 'win32' ? 'claude.exe' : 'claude')
+}
 
 type SubprocessFace = Pick<SubprocessRuntime, 'spawn'>
 
@@ -336,47 +311,62 @@ export class ClaudeController {
   readonly dataDirectory = configRoot()
   readonly configFile = join(this.dataDirectory, 'settings.json')
   readonly #queries = new Set<ClaudeQuery>()
+  readonly #cli: EngineCli
   #closed = false
 
-  constructor(private readonly subprocess: SubprocessFace) {}
-
-  /** SDK version, or a placeholder when the SDK package is not installed. */
-  get sdkVersion(): string {
-    return sdkManifest.peek()?.version ?? '未知版本'
+  constructor(private readonly subprocess: SubprocessFace, config: CodingAgentsConfig = {}) {
+    this.#cli = new EngineCli({
+      engine: 'claude-code',
+      label: 'Claude Code',
+      configured: config.claudeCommand,
+      bundled: bundledClaudeExecutable,
+      subprocess,
+    })
   }
 
-  /** Claude Code CLI version, or a placeholder when the SDK package is not installed. */
-  get version(): string {
-    const manifest = sdkManifest.peek()
-    return manifest?.claudeCodeVersion ?? manifest?.version ?? '未知版本'
+  /** Installed SDK version, or undefined when the optional peer is absent. */
+  get sdkVersion(): string | undefined {
+    return claudeSdkVersion()
   }
 
-  /** Native CLI path; throws the actionable installation error when missing. */
+  /** Where the Claude Code CLI came from. */
+  get source() {
+    return this.#cli.source
+  }
+
+  /** CLI path; throws the actionable installation error when missing. */
   get executable(): string {
-    return claudeExecutable.resolve()
+    return this.#cli.command
   }
 
-  /** Native CLI path when resolution already succeeded, without throwing. */
+  /** CLI path when resolution succeeded, without throwing. */
   get executablePath(): string | undefined {
-    return claudeExecutable.peek()
+    return this.#cli.commandOrUndefined
   }
 
   /** Whether this engine can start tasks in the current installation. */
   get available(): boolean {
-    return this.unavailableReason === undefined
+    return this.#cli.available && claudeSdkInstalled()
   }
 
   /** Actionable reason this engine cannot start tasks, if any. */
   get unavailableReason(): string | undefined {
-    sdkManifest.peek()
-    if (sdkManifest.failure !== undefined) return sdkManifest.failure.message
-    claudeExecutable.peek()
-    return claudeExecutable.failure?.message
+    const issues = [
+      this.#cli.reason,
+      claudeSdkInstalled() ? undefined : claudeSdkUnavailableReason(),
+    ].filter((issue): issue is string => issue !== undefined)
+    return issues.length === 0 ? undefined : issues.join('；')
+  }
+
+  /** Cached `claude --version` value. */
+  version(): Promise<string | undefined> {
+    return this.#cli.version()
   }
 
   async list(filter: CodingAgentSessionQuery): Promise<CodingAgentSessionSummary[]> {
     const limit = Math.min(200, Math.max(1, Math.floor(filter.limit ?? 50)))
-    const sessions = await listSessions({
+    const sdk = await loadClaudeSdk()
+    const sessions = await sdk.listSessions({
       ...(filter.cwd?.trim() ? { dir: filter.cwd.trim() } : {}),
       limit: Math.min(1_000, limit + Math.max(0, filter.offset ?? 0)),
       includeProgrammatic: true,
@@ -390,9 +380,10 @@ export class ClaudeController {
 
   async detail(sessionId: string, cwd?: string, limit = 500, offset?: number): Promise<CodingAgentSessionDetail> {
     const options = cwd === undefined || cwd.trim() === '' ? {} : { dir: cwd }
+    const sdk = await loadClaudeSdk()
     const [session, all] = await Promise.all([
-      getSessionInfo(sessionId, options),
-      getSessionMessages(sessionId, { ...options, includeSystemMessages: true }),
+      sdk.getSessionInfo(sessionId, options),
+      sdk.getSessionMessages(sessionId, { ...options, includeSystemMessages: true }),
     ])
     if (session === undefined) throw new Error('Claude Code 会话不存在或无法读取')
     const pageSize = Math.min(2_000, Math.max(1, Math.floor(limit)))
@@ -409,7 +400,8 @@ export class ClaudeController {
   }
 
   async config(cwd?: string): Promise<CodingAgentConfigSnapshot> {
-    const resolved = await resolveSettings({ ...(cwd === undefined || cwd.trim() === '' ? {} : { cwd }) })
+    const sdk = await loadClaudeSdk()
+    const resolved = await sdk.resolveSettings({ ...(cwd === undefined || cwd.trim() === '' ? {} : { cwd }) })
     const root = cwd === undefined || cwd.trim() === '' ? undefined : resolve(cwd)
     return {
       engine: 'claude-code',
@@ -442,19 +434,23 @@ export class ClaudeController {
     const options = change.cwd === undefined || change.cwd.trim() === '' ? {} : { dir: change.cwd }
     if (change.action === 'rename') {
       if (change.title?.trim() === '') throw new Error('会话名称不能为空')
-      await renameSession(change.sessionId, change.title!.trim(), options)
+      const sdk = await loadClaudeSdk()
+      await sdk.renameSession(change.sessionId, change.title!.trim(), options)
       return { sessionId: change.sessionId }
     }
     if (change.action === 'tag') {
-      await tagSession(change.sessionId, change.tag?.trim() || null, options)
+      const sdk = await loadClaudeSdk()
+      await sdk.tagSession(change.sessionId, change.tag?.trim() || null, options)
       return { sessionId: change.sessionId }
     }
     if (change.action === 'delete') {
-      await deleteSession(change.sessionId, options)
+      const sdk = await loadClaudeSdk()
+      await sdk.deleteSession(change.sessionId, options)
       return { sessionId: change.sessionId }
     }
     if (change.action === 'fork') {
-      const result = await forkSession(change.sessionId, {
+      const sdk = await loadClaudeSdk()
+      const result = await sdk.forkSession(change.sessionId, {
         ...options,
         ...(change.upToMessageId === undefined ? {} : { upToMessageId: change.upToMessageId }),
         ...(change.title === undefined ? {} : { title: change.title }),
@@ -466,6 +462,9 @@ export class ClaudeController {
 
   async execute(request: CodingAgentRunRequest, hooks: ClaudeHooks): Promise<{ sessionId: string; output: string }> {
     if (this.#closed) throw new Error('Claude Code 控制器已经关闭')
+    const unavailable = this.unavailableReason
+    if (unavailable !== undefined) throw new Error(unavailable)
+    const cli = this.executable
     if (request.mode !== 'new' && request.sessionId === undefined) throw new Error('继续或分叉 Claude Code 会话需要 sessionId')
     const cwd = resolve(request.cwd?.trim() || process.cwd())
     const abortController = new AbortController()
@@ -484,7 +483,7 @@ export class ClaudeController {
         settingSources: ['user', 'project', 'local'],
         tools: { type: 'preset', preset: 'claude_code' },
         systemPrompt: { type: 'preset', preset: 'claude_code' },
-        pathToClaudeCodeExecutable: this.executable,
+        pathToClaudeCodeExecutable: cli,
         includePartialMessages: false,
         ...permissionOptions(request.permission ?? 'workspace-write', cwd),
         ...(request.model === undefined ? {} : { model: request.model }),
@@ -504,7 +503,8 @@ export class ClaudeController {
           return new ManagedClaudeProcess(child)
         },
       }
-      run = claudeQuery({ prompt: request.prompt, options })
+      const sdk = await loadClaudeSdk()
+      run = sdk.query({ prompt: request.prompt, options })
       this.#queries.add(run)
       hooks.onEvent('status', request.mode === 'new' ? 'Claude Code 新会话正在启动' : request.mode === 'fork' ? 'Claude Code 分叉会话正在启动' : 'Claude Code 会话正在继续')
       let output = ''

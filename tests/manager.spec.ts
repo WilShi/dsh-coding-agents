@@ -30,7 +30,7 @@ describe('CodingAgentsManager', () => {
     const subject = manager()
     vi.spyOn(subject.codex, 'unavailableReason', 'get').mockReturnValue(UNAVAILABLE)
     vi.spyOn(subject.codex, 'executablePath', 'get').mockReturnValue(undefined)
-    const installations = subject.installations()
+    const installations = await subject.installations()
     expect(installations.find(item => item.engine === 'codex')).toMatchObject({
       available: false,
       diagnostic: UNAVAILABLE,

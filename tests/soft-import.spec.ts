@@ -1,19 +1,23 @@
 import { describe, expect, it, vi } from 'vitest'
+import { spawn as spawnChild } from 'node:child_process'
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 /**
- * Host-without-native-packages scenario, as observed in the real 0.2.1 E2E:
- * pnpm can skip the platform-specific optional dependency, which used to make
- * the whole plugin fail to import. `node:module` is mocked so that
- * `require.resolve('@anthropic-ai/claude-agent-sdk-<platform>-<arch>')` and
- * `require.resolve('@openai/codex-<platform>-<arch>')` throw MODULE_NOT_FOUND
- * while every other module keeps resolving normally.
+ * Host-without-vendor-packages scenario, as observed in the real 0.2.1 E2E:
+ * neither the platform-native CLI nor the optional peer packages are present.
+ * `node:module` is mocked so every vendor package import/resolve throws, which
+ * proves the plugin no longer needs them while it is being imported.
  */
 const state = vi.hoisted(() => ({ blockedResolves: 0 }))
+
+const BLOCKED = ['@anthropic-ai/claude-agent-sdk', '@openai/codex']
 
 vi.mock('node:module', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:module')>()
   const blocked = (id: string): boolean =>
-    id.startsWith('@anthropic-ai/claude-agent-sdk-') || id.startsWith('@openai/codex-')
+    BLOCKED.some(prefix => id === prefix || id.startsWith(prefix + '/') || id.startsWith(prefix + '-'))
   const wrap = (real: NodeJS.Require): NodeJS.Require => {
     const callable = ((id: string) => {
       if (blocked(id)) {
@@ -37,65 +41,119 @@ vi.mock('node:module', async (importOriginal) => {
   return { ...actual, createRequire: (url: string | URL) => wrap(actual.createRequire(url)) }
 })
 
-const subprocess = { spawn: vi.fn(() => { throw new Error('no process may be spawned') }) } as never
-
-function claudeHooks() {
+/** Host subprocess stub that really runs the command (used by the version probe). */
+function realSubprocess() {
   return {
-    signal: new AbortController().signal,
-    onSession: () => {},
-    onEvent: () => {},
-    onOutput: () => {},
-  }
+    spawn(spec: { argv: readonly string[]; cwd: string; env?: NodeJS.ProcessEnv; signal?: AbortSignal }) {
+      const child = spawnChild(spec.argv[0]!, spec.argv.slice(1), { cwd: spec.cwd, env: spec.env, stdio: ['ignore', 'pipe', 'pipe'] })
+      if (spec.signal !== undefined) spec.signal.addEventListener('abort', () => child.kill(), { once: true })
+      const done = new Promise<{ exitCode: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+        child.once('error', reject)
+        child.once('exit', (exitCode, signal) => resolve({ exitCode, signal }))
+      })
+      return {
+        stdin: undefined,
+        stdout: child.stdout,
+        stderr: child.stderr,
+        collected: {},
+        done,
+        terminate() { child.kill() },
+        async waitForExit() { return true },
+      }
+    },
+  } as never
 }
 
-function codexHooks() {
-  return { ...claudeHooks(), onTurn: () => {} }
+async function fakeCli(directory: string, name: string, version: string): Promise<void> {
+  const path = join(directory, name)
+  await writeFile(path, '#!/bin/sh\necho "' + name + '-cli ' + version + '"\n', { encoding: 'utf8', mode: 0o755 })
+  await chmod(path, 0o755)
 }
 
-describe('fail-soft native resolution', () => {
-  it('imports both controllers without resolving a native package', async () => {
+function hooks() {
+  return { signal: new AbortController().signal, onSession: () => {}, onTurn: () => {}, onEvent: () => {}, onOutput: () => {} }
+}
+
+describe('fail-soft vendor resolution', () => {
+  it('imports the plugin modules without resolving any vendor package', async () => {
     const claude = await import('../src/claude-controller.ts')
     const codex = await import('../src/codex-controller.ts')
+    const managerModule = await import('../src/manager.ts')
     expect(typeof claude.ClaudeController).toBe('function')
     expect(typeof codex.CodexController).toBe('function')
+    expect(typeof managerModule.CodingAgentsManager).toBe('function')
     expect(state.blockedResolves).toBe(0)
   })
 
-  it('marks claude-code unavailable with an actionable reason instead of failing', async () => {
-    const { ClaudeController } = await import('../src/claude-controller.ts')
-    const controller = new ClaudeController(subprocess)
-    expect(controller.available).toBe(false)
-    expect(controller.executablePath).toBeUndefined()
-    expect(controller.unavailableReason).toContain('@anthropic-ai/claude-agent-sdk-')
-    expect(controller.unavailableReason).toContain('optional')
-    await expect(controller.execute({ engine: 'claude-code', mode: 'new', prompt: 'hello' }, claudeHooks()))
-      .rejects.toThrow(/重新安装 dsh-coding-agents/u)
-  })
-
-  it('marks codex unavailable with an actionable reason instead of failing', async () => {
-    const { CodexController } = await import('../src/codex-controller.ts')
-    const controller = new CodexController(subprocess)
-    expect(controller.available).toBe(false)
-    expect(controller.executablePath).toBeUndefined()
-    expect(controller.unavailableReason).toContain('@openai/codex-')
-    expect(controller.unavailableReason).toContain('optional')
-    await expect(controller.execute({ engine: 'codex', mode: 'new', prompt: 'hello' }, codexHooks()))
-      .rejects.toThrow(/重新安装 dsh-coding-agents/u)
-  })
-
-  it('keeps manager status and start fail-soft and actionable', async () => {
+  it('reports both engines unavailable with actionable reasons when nothing is installed', async () => {
     const { CodingAgentsManager } = await import('../src/manager.ts')
-    const manager = new CodingAgentsManager(subprocess, 4)
+    const empty = await mkdtemp(join(tmpdir(), 'dsh-ca-none-'))
+    const previous = process.env.PATH
+    process.env.PATH = empty
     try {
-      const installations = manager.installations()
-      expect(installations).toHaveLength(2)
-      expect(installations.every(item => item.available)).toBe(false)
-      expect(installations.every(item => item.executable === undefined)).toBe(true)
-      expect(installations.every(item => (item.diagnostic ?? '').includes('optional'))).toBe(true)
-      expect(() => manager.start({ engine: 'codex', mode: 'new', prompt: 'x' })).toThrow(/optional/u)
-      expect(() => manager.start({ engine: 'claude-code', mode: 'new', prompt: 'x' })).toThrow(/optional/u)
+      const manager = new CodingAgentsManager(realSubprocess(), 4)
+      try {
+        const installations = await manager.installations()
+        expect(installations).toHaveLength(2)
+        expect(installations.every(item => !item.available)).toBe(true)
+        expect(installations[0]?.diagnostic).toContain('1)')
+        expect(installations[1]?.diagnostic).toContain('Claude Agent SDK')
+        expect(() => manager.start({ engine: 'codex', mode: 'new', prompt: 'x' })).toThrow(/未找到可用的 Codex/u)
+      } finally {
+        await manager.dispose()
+      }
     } finally {
-      await manager.dispose()
+      process.env.PATH = previous
+      await rm(empty, { recursive: true, force: true })
+    }
+  })
+
+  it('uses a system CLI from PATH and probes its version', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'dsh-ca-system-'))
+    const previous = process.env.PATH
+    process.env.PATH = directory
+    try {
+      await fakeCli(directory, 'codex', '1.4.2')
+      await fakeCli(directory, 'claude', '9.8.7')
+      const { CodingAgentsManager } = await import('../src/manager.ts')
+      const manager = new CodingAgentsManager(realSubprocess(), 4)
+      try {
+        const installations = await manager.installations()
+        const codex = installations.find(item => item.engine === 'codex')
+        expect(codex).toMatchObject({ available: true, source: 'system', version: '1.4.2' })
+        const claude = installations.find(item => item.engine === 'claude-code')
+        // The SDK peer is blocked in this module graph, so only the CLI is known.
+        expect(claude?.source).toBe('system')
+        expect(claude?.version).toBe('9.8.7')
+        expect(claude?.available).toBe(false)
+        expect(claude?.diagnostic).toContain('Claude Agent SDK')
+      } finally {
+        await manager.dispose()
+      }
+    } finally {
+      process.env.PATH = previous
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('prefers a configured command over the system PATH', async () => {
+    const system = await mkdtemp(join(tmpdir(), 'dsh-ca-sys-'))
+    const custom = await mkdtemp(join(tmpdir(), 'dsh-ca-cfg-'))
+    const previous = process.env.PATH
+    process.env.PATH = system
+    try {
+      await fakeCli(system, 'codex', '1.0.0')
+      const configured = join(custom, 'my-codex')
+      await fakeCli(custom, 'my-codex', '5.5.5')
+      const { CodexController } = await import('../src/codex-controller.ts')
+      const controller = new CodexController(realSubprocess(), { codexCommand: configured })
+      expect(controller.source).toBe('config')
+      expect(controller.executable).toBe(configured)
+      expect(await controller.version()).toBe('5.5.5')
+    } finally {
+      process.env.PATH = previous
+      await rm(system, { recursive: true, force: true })
+      await rm(custom, { recursive: true, force: true })
     }
   })
 })

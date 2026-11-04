@@ -2,12 +2,25 @@ export type CodingAgentEngine = 'codex' | 'claude-code'
 export type CodingAgentPermission = 'read-only' | 'workspace-write' | 'full-access'
 export type CodingAgentRunMode = 'new' | 'resume' | 'fork'
 
+/** Where the CLI driving one engine came from. */
+export type CodingAgentInstallSource = 'config' | 'system' | 'bundled'
+
+/** Loader configuration accepted from the profile's cordis patch. */
+export interface CodingAgentsConfig {
+  /** Absolute path or PATH command name for the Codex CLI; empty = auto. */
+  codexCommand?: string
+  /** Absolute path or PATH command name for the Claude Code CLI; empty = auto. */
+  claudeCommand?: string
+}
+
 export interface CodingAgentInstallation {
   engine: CodingAgentEngine
   label: string
   available: boolean
   version?: string
   executable?: string
+  /** Where the CLI came from: config override, system PATH or the bundled package. */
+  source?: CodingAgentInstallSource
   dataDirectory: string
   configFile: string
   diagnostic?: string

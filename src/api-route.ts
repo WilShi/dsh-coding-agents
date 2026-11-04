@@ -268,7 +268,7 @@ export function createCodingAgentsRoute(manager: CodingAgentsManager, options: C
         ? url.pathname.slice(CODING_AGENTS_API_PREFIX.length) || '/'
         : url.pathname
       if (method === 'GET' && path === '/status') {
-        send(response, 200, { ok: true, installations: manager.installations(), running: manager.runningCount(), maximumConcurrentRuns: manager.maximumConcurrentRuns })
+        send(response, 200, { ok: true, installations: await manager.installations(), running: manager.runningCount(), maximumConcurrentRuns: manager.maximumConcurrentRuns })
         return
       }
       if (method === 'GET' && path === '/sessions') {

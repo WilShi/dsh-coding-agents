@@ -18,7 +18,24 @@ The plugin calls the public, stable local interfaces of Codex and Claude Code. I
 | Node.js | `^22.19.0 \|\| ^24.0.0` |
 | Host services | `webServer`, `subprocess`, `tools` |
 | Client services | `slots` (registers one section under Settings → Coding agents) |
-| Bundled dependencies | `@openai/codex`, `@anthropic-ai/claude-agent-sdk` and their native binaries — the install is large |
+| Vendor CLIs | Your own Codex CLI `>= 0.100.0` / Claude Code via Agent SDK `>= 0.3.0` (both optional peers) |
+
+## Use your own Codex & Claude Code
+
+The plugin never pins a vendor version. Each engine resolves independently, in order: `config.codexCommand` / `config.claudeCommand` → system `PATH` (`codex` / `claude`) → the CLI bundled in this package → unavailable with an actionable message. The status page reports the source (`config` / `system` / `bundled`) and the version read from `<cli> --version`.
+
+- **Global install:** install Codex / Claude Code normally (e.g. `npm i -g @openai/codex`); the plugin drives the CLI already on your `PATH`, including future upgrades.
+- **Install it in this profile:** `dsh plugin --profile <name> add @openai/codex` (or `pnpm add @anthropic-ai/claude-agent-sdk`) — both are *optional peers*, so the plugin never dictates your version.
+- **Point at a specific build** in the profile's `cordis.patch.yml`:
+
+```yaml
+- id: dsh-coding-agents
+  config:
+    codexCommand: /opt/homebrew/bin/codex
+    claudeCommand: /Users/me/.local/bin/claude
+```
+
+Without the Claude Agent SDK the plugin still loads and the Codex engine keeps working; the Claude Code row simply reports `unavailable` with the SDK install hint.
 
 ## Install
 
@@ -82,7 +99,7 @@ npm run smoke:host  # load lib/index.js in a real cordis context with stubbed ho
 
 - Requires a local Codex / Claude Code installation and login. Without it the engine reports an explicit unavailable state.
 - Native executables are resolved on first use. If a package manager skipped the platform optional dependency, only that engine reports an actionable "unavailable" state (status page, `coding_agent_status`, run start) while the plugin itself still imports and the other engine keeps working; reinstall with optional dependencies enabled to restore it.
-- The bundled native dependencies are large, so the first install depends on network speed.
+- The bundled CLI fallback (when present) is large, so the first install depends on network speed; using your own global CLI avoids it entirely.
 - The HTTP API is a loopback `http://` surface by design: a TLS or non-loopback DSH web deployment is refused rather than downgraded.
 - The plugin drives the vendor CLIs; it does not reimplement their agent loops.
 

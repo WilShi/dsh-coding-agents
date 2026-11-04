@@ -18,7 +18,24 @@
 | Node.js | `^22.19.0 \|\| ^24.0.0` |
 | 宿主注入 | `webServer`、`subprocess`、`tools` |
 | 客户端注入 | `slots`（在「设置 → 编程助手」注册一个 section） |
-| 随包依赖 | `@openai/codex`、`@anthropic-ai/claude-agent-sdk` 及其本机原生程序（安装体积较大） |
+| 厂商 CLI | 你自己的 Codex CLI `>= 0.100.0` / Claude Code（Agent SDK `>= 0.3.0`），两者都是 optional peer |
+
+## 使用/升级你自己的 Codex & Claude Code
+
+插件不固定厂商版本。每个引擎独立解析，顺序为：`config.codexCommand` / `config.claudeCommand` → 系统 `PATH`（`codex` / `claude`）→ 插件自带包 → 都没有时给出可行动提示。状态页会显示来源（`config` / `system` / `bundled`）以及 `<cli> --version` 读到的版本。
+
+- **全局安装（推荐）**：照常安装 Codex / Claude Code（如 `npm i -g @openai/codex`），插件直接使用 `PATH` 上那份，升级后无需改插件。
+- **装进当前 profile**：`dsh plugin --profile <name> add @openai/codex`（或 `pnpm add @anthropic-ai/claude-agent-sdk`）；两者是 *optional peer*，插件不会覆盖你装的版本。
+- **指定某个构建**：在 profile 的 `cordis.patch.yml` 里配置：
+
+```yaml
+- id: dsh-coding-agents
+  config:
+    codexCommand: /opt/homebrew/bin/codex
+    claudeCommand: /Users/me/.local/bin/claude
+```
+
+没装 Claude Agent SDK 时插件照常工作、Codex 引擎可用，Claude Code 一行显示 `unavailable` 并提示如何安装 SDK。
 
 ## 安装
 
@@ -82,7 +99,7 @@ npm run smoke:host  # 真实 cordis Context + 桩宿主服务里加载 lib/index
 
 - 需要本机已安装并登录对应的 Codex / Claude Code；未安装时对应引擎不可用，插件会给出明确状态。
 - 原生可执行文件在首次使用时解析。若包管理器跳过了当前平台的可选依赖，只有对应引擎会显示「不可用」并给出原因（状态页、`coding_agent_status`、启动任务时），插件本身仍可正常 import，另一个引擎也不受影响；重新安装并启用 optional 依赖即可恢复。
-- 安装依赖较大（随包原生程序），首次安装耗时取决于网络。
+- 可选的随包 CLI 体积较大，首次安装耗时取决于网络；直接用全局安装的 CLI 则无需下载。
 - HTTP API 按设计只接受回环 `http://`；TLS 或非回环的 DSH Web 部署会被拒绝，而不是降级放行。
 
 ## License

@@ -2,6 +2,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-subprocess'
 import type {} from '@deepseek-ai/dsh-tools'
+import type { CodingAgentsConfig } from './types.ts'
 import { CODING_AGENTS_API_PREFIX, createCodingAgentsRoute } from './api-route.ts'
 import { CodingAgentsManager } from './manager.ts'
 import { createCodingAgentTools } from './tools.ts'
@@ -37,8 +38,8 @@ function registeredWorkspaceRoots(ctx: Context): string[] | undefined {
   }
 }
 
-export async function apply(ctx: Context): Promise<void> {
-  const manager = new CodingAgentsManager(ctx.subprocess, 4)
+export async function apply(ctx: Context, config: CodingAgentsConfig = {}): Promise<void> {
+  const manager = new CodingAgentsManager(ctx.subprocess, 4, config)
   ctx.effect(() => () => manager.dispose(), 'dsh-coding-agents: dispose manager')
   ctx.effect(() => ctx.webServer.register({
     kind: 'prefix',
