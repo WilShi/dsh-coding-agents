@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
+import { copyFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -371,9 +372,17 @@ export class CodexController {
     }
   }
 
+  /** Copy config.toml before a protocol write so a bad value is always recoverable. */
+  async #backupConfigFile(): Promise<void> {
+    if (!existsSync(this.configFile)) return
+    const stamp = new Date().toISOString().replace(/[:.]/gu, '-')
+    await copyFile(this.configFile, `${this.configFile}.backup-dsh-${stamp}`)
+  }
+
   async writeConfig(change: CodingAgentConfigWrite): Promise<CodingAgentConfigSnapshot> {
     if (change.remove === true) throw new Error('Codex 官方配置协议不支持无歧义删除，请把该配置项改为默认值')
     if (change.target !== undefined && change.target !== 'user') throw new Error('Codex 当前仅允许修改用户配置')
+    await this.#backupConfigFile()
     const transport = await this.#ensure()
     await transport.request('config/value/write', {
       keyPath: change.keyPath,

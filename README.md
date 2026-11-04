@@ -54,14 +54,17 @@ Restart the profile, then open **Settings → Coding agents**.
 - "Start a Claude Code task in this workspace and fix the build error."
 - "Read the current Codex configuration."
 
-The plugin only drives engines that the current user has installed and logged in. Runs default to workspace-write permissions; full access still requires an explicit request from the user.
+The plugin only drives engines that the current user has installed and logged in. Runs default to workspace-write permissions, and full access is never reachable from a web page or from a model tool: it only happens when you start the run yourself in the DSH UI.
 
 ## Safety boundaries
 
+- **Loopback + same-origin HTTP only.** `/coding-agents-api` rejects any request whose TCP peer is not this machine (403), any browser request whose `Origin` is not exactly the `http://<host>` it was sent to (403), any request whose `Sec-Fetch-Site` is `cross-site` (403), every POST without `content-type: application/json` (415), and CORS preflight (`OPTIONS`, 405). A random web page therefore cannot drive your local Codex or Claude Code, even with a "simple" request that skips the CORS preflight.
+- **No full access through HTTP.** The HTTP surface accepts only `read-only` and `workspace-write`; `full-access` (Claude Code `bypassPermissions`, Codex `danger-full-access`) is reachable only from the DSH UI, where you confirm it yourself. The model tools mirror this ceiling: `coding_agent_run` refuses `full-access` with an actionable error.
+- **Registered workspaces bound every `cwd`.** A `cwd` is accepted only when it resolves inside a workspace registered in DSH; paths are normalised and traversal outside a registered root is refused. When the host exposes no workspace registry, requests carrying a `cwd` are refused instead of trusting the caller.
+- **Configuration writes are allowlisted.** HTTP may write only `model` and `model_reasoning_effort` (Codex) or `permissions.defaultMode` (Claude Code). Every other key — MCP servers, hooks, permission presets, arbitrary nesting — needs the DSH UI or a manual edit. Both engines back the file up before a write (Claude Code: backup + atomic replace; Codex: `config.toml.backup-dsh-<timestamp>` before its official config protocol write).
 - No vendor private database is read; only the public local interfaces.
-- Configuration writes are backup plus atomic replace, so a failure never leaves a half-written file.
 - Child processes live in the host's `subprocess` service and inherit a scrubbed environment (`scrubbedParentEnv`).
-- Session operations are workspace-scoped and the HTTP route is same-origin only.
+- Session operations stay scoped to the workspace that owns the session.
 
 ## Development
 
@@ -80,6 +83,7 @@ npm run smoke:host  # load lib/index.js in a real cordis context with stubbed ho
 - Requires a local Codex / Claude Code installation and login. Without it the engine reports an explicit unavailable state.
 - Native executables are resolved at module load time; when the optional native package is missing the whole plugin fails to import (same behaviour as 0.1.5 — lazy loading is planned).
 - The bundled native dependencies are large, so the first install depends on network speed.
+- The HTTP API is a loopback `http://` surface by design: a TLS or non-loopback DSH web deployment is refused rather than downgraded.
 - The plugin drives the vendor CLIs; it does not reimplement their agent loops.
 
 ## License

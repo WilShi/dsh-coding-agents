@@ -54,14 +54,17 @@ dsh plugin --profile <profile> add dsh-coding-agents
 - 「用 Claude Code 在当前工作区新建任务，修复构建错误。」
 - 「读取 Codex 当前配置。」
 
-插件只控制**当前用户已安装且可用**的产品；运行任务默认使用工作区可写权限，完全访问需要用户明确要求。
+插件只控制**当前用户已安装且可用**的产品；运行任务默认使用工作区可写权限。完全访问不能从网页或模型工具获得，只有在 DSH 界面里由用户自己启动任务时才可能启用。
 
 ## 安全边界
 
+- **HTTP 只服务本机回环与同源请求。** `/coding-agents-api` 会拒绝：TCP 对端不是本机的请求（403）、`Origin` 不等于 `http://<Host 头>` 的浏览器请求（403）、`Sec-Fetch-Site: cross-site` 的请求（403）、没有 `content-type: application/json` 的 POST（415），以及 CORS 预检 `OPTIONS`（405）。因此任意网页都无法驱动本机的 Codex / Claude Code —— 包括用「简单请求」绕过预检的那条路。
+- **HTTP 不提供完全访问。** 该接口只接受 `read-only` 与 `workspace-write`；`full-access`（Claude Code 的 `bypassPermissions`、Codex 的 `danger-full-access`）只能在 DSH 界面中由用户确认。模型工具同样封顶：`coding_agent_run` 会拒绝 `full-access` 并给出可执行的提示。
+- **`cwd` 限定在已注册工作区内。** 只有解析后落在 DSH 已注册 workspace 内的路径才被接受；路径会规范化，越界（含兄弟目录前缀）一律拒绝。宿主没有 workspace 注册表时，带 `cwd` 的请求直接被拒绝，而不是相信调用方。
+- **配置写入白名单。** HTTP 只允许写 Codex 的 `model` / `model_reasoning_effort` 与 Claude Code 的 `permissions.defaultMode`；MCP server、hooks、权限预设等其它键只能走 DSH 界面或手工编辑。两个引擎写入前都会备份（Claude Code：备份 + 原子替换；Codex：先写 `config.toml.backup-dsh-<时间戳>` 再走官方配置协议）。
 - 不读取厂商私有数据库；只用公开的本地接口。
-- 配置写入是「备份 + 原子替换」，失败不会留下半写状态。
 - 进程由宿主的 `subprocess` 服务托管，环境变量经过清洗（`scrubbedParentEnv`）。
-- 会话操作按工作区隔离，HTTP 路由为同源访问。
+- 会话操作按会话所属工作区隔离。
 
 ## 开发
 
@@ -80,6 +83,7 @@ npm run smoke:host  # 真实 cordis Context + 桩宿主服务里加载 lib/index
 - 需要本机已安装并登录对应的 Codex / Claude Code；未安装时对应引擎不可用，插件会给出明确状态。
 - 原生可执行文件在模块加载期解析，缺失时整个插件 import 失败（与 0.1.5 行为一致，后续版本会惰性化）。
 - 安装依赖较大（随包原生程序），首次安装耗时取决于网络。
+- HTTP API 按设计只接受回环 `http://`；TLS 或非回环的 DSH Web 部署会被拒绝，而不是降级放行。
 
 ## License
 

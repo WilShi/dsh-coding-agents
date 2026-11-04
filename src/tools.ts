@@ -9,8 +9,11 @@ function engine(value: string): CodingAgentEngine {
 
 function permission(value: string | undefined): CodingAgentPermission | undefined {
   if (value === undefined) return undefined
-  if (value === 'read-only' || value === 'workspace-write' || value === 'full-access') return value
-  throw new Error('permission 必须是 read-only、workspace-write 或 full-access')
+  if (value === 'full-access') {
+    throw new Error('模型工具不能直接授予 full-access（完全访问）。请让用户在 DSH 界面中手动确认并启动该任务，或改用默认的 workspace-write 权限。')
+  }
+  if (value === 'read-only' || value === 'workspace-write') return value
+  throw new Error('permission 必须是 read-only 或 workspace-write（full-access 只能在 DSH 界面中由用户确认）')
 }
 
 function mode(value: string): CodingAgentRunMode {
@@ -120,7 +123,7 @@ export function createCodingAgentTools(manager: CodingAgentsManager) {
       sessionId: { type: 'string', description: 'resume/fork 必填。' },
       model: { type: 'string' },
       effort: { type: 'string', description: '模型支持的思考强度，例如 low/medium/high/xhigh/max。' },
-      permission: { type: 'string', enum: ['read-only', 'workspace-write', 'full-access'], description: '默认 workspace-write；full-access 仅在用户明确要求时使用。' },
+      permission: { type: 'string', enum: ['read-only', 'workspace-write'], description: '默认 workspace-write。full-access（完全访问）不可由模型工具申请，只能在 DSH 界面中由用户确认。' },
       wait: { type: 'boolean', description: '默认 true。false 时只启动并返回 runId。' },
     },
     output: {
